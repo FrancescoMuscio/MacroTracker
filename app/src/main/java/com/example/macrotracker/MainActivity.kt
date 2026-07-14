@@ -215,6 +215,48 @@ data class BodyRecord(
     }
 }
 
+data class Dish(
+    val name: String,
+    val ingredients: List<FoodEntry>
+) {
+    fun toJson(): JSONObject {
+        val array = JSONArray()
+        ingredients.forEach { array.put(it.toJson()) }
+        return JSONObject().put("name", name).put("ingredients", array)
+    }
+
+    fun toFoodEntry(): FoodEntry {
+        val totalKcal = ingredients.sumOf { it.calories }
+        val totalProtein = ingredients.sumOf { it.protein }
+        val totalCarbs = ingredients.sumOf { it.carbs }
+        val totalFat = ingredients.sumOf { it.fat }
+        val totalGrams = ingredients.sumOf { it.grams }
+
+        return FoodEntry(
+            name = name,
+            calories = totalKcal,
+            protein = totalProtein,
+            carbs = totalCarbs,
+            fat = totalFat,
+            grams = totalGrams,
+            baseCalories = totalKcal,
+            baseProtein = totalProtein,
+            baseCarbs = totalCarbs,
+            baseFat = totalFat,
+            portionGrams = totalGrams
+        )
+    }
+
+    companion object {
+        fun fromJson(json: JSONObject): Dish {
+            val name = json.optString("name", "Piatto")
+            val array = json.optJSONArray("ingredients") ?: JSONArray()
+            val ingredients = (0 until array.length()).map { FoodEntry.fromJson(array.getJSONObject(it)) }
+            return Dish(name, ingredients)
+        }
+    }
+}
+
 enum class Screen {
     Today,
     Foods,
@@ -241,6 +283,7 @@ class MainActivity : Activity() {
     private val prefs by lazy { getSharedPreferences("macro_tracker", Context.MODE_PRIVATE) }
     private val entries = mutableListOf<FoodEntry>()
     private val foodLibrary = mutableListOf<FoodEntry>()
+    private val dishLibrary = mutableListOf<Dish>()
     private val bodyHistory = mutableListOf<BodyRecord>()
     private val entryDates = linkedSetOf<String>()
     private val dayFormatter = DateTimeFormatter.ofPattern("dd/MM/yyyy")
@@ -248,6 +291,7 @@ class MainActivity : Activity() {
     private var goals = Goals()
     private var currentDate: LocalDate = LocalDate.now()
     private var screen = Screen.Today
+    private var foodsTabMode = 0 // 0: Foods, 1: Dishes
     private var showRemainingMacros = true
     private var useEnglish = false
     private var paletteIndex = 0
@@ -374,7 +418,32 @@ class MainActivity : Activity() {
     }
 
     private fun renderFoods() {
-        root.addView(sectionTitle(txt("Database alimenti", "Food database")))
+        root.addView(sectionTitle(txt("Database alimenti e piatti", "Food and dish database")))
+
+        // Tab Toggle
+        root.addView(panel {
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(toggleButton(txt("Alimenti", "Foods"), foodsTabMode == 0) {
+                    foodsTabMode = 0
+                    render()
+                }, weightParams())
+                addView(space(8))
+                addView(toggleButton(txt("Piatti composti", "Dishes"), foodsTabMode == 1) {
+                    foodsTabMode = 1
+                    render()
+                }, weightParams())
+            })
+        })
+
+        if (foodsTabMode == 0) {
+            renderFoodsTab()
+        } else {
+            renderDishesTab()
+        }
+    }
+
+    private fun renderFoodsTab() {
         root.addView(bodyText(txt("Gli alimenti sono salvati con valori riferiti a 100g. Usa lo swipe per eliminare o tieni premuto per modificare.", "Foods are saved per 100g. Swipe to delete or long-press to edit.")))
         
         // Search Bar
@@ -396,7 +465,6 @@ class MainActivity : Activity() {
                     val query = s?.toString().orEmpty()
                     if (query != librarySearchQuery) {
                         librarySearchQuery = query
-                        // Perform local filtering without full render to keep keyboard open
                         updateLibraryList(libraryListContainer, librarySearchQuery)
                     }
                 }
@@ -416,6 +484,22 @@ class MainActivity : Activity() {
         libraryListContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(panel { addView(libraryListContainer) })
         updateLibraryList(libraryListContainer, librarySearchQuery)
+    }
+
+    private fun renderDishesTab() {
+        root.addView(bodyText(txt("Crea piatti composti da più ingredienti. Usa lo swipe per eliminare.", "Create dishes made of multiple ingredients. Swipe to delete.")))
+        root.addView(primaryButton(txt("Nuovo piatto", "New dish")) { showDishDialog() })
+        
+        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(panel { addView(container) })
+        
+        if (dishLibrary.isEmpty()) {
+            container.addView(bodyText(txt("Nessun piatto salvato.", "No dishes saved yet.")))
+        } else {
+            dishLibrary.sortedBy { it.name.lowercase() }.forEach { dish ->
+                container.addView(dishRow(dish))
+            }
+        }
     }
 
     private lateinit var libraryListContainer: LinearLayout
@@ -747,12 +831,15 @@ class MainActivity : Activity() {
     }
 
     private fun showAddOptionsForMeal(mealName: String) {
-        val options = arrayOf(txt("+ Alimento", "+ Food"), txt("Database", "Database"))
+        val options = arrayOf(txt("+ Alimento", "+ Food"), txt("Database", "Database"), txt("Piatti", "Dishes"))
         AlertDialog.Builder(this)
             .setTitle(mealName)
             .setItems(options) { _, which ->
-                if (which == 0) showFoodDialog(addToDay = true, saveToLibrary = false, targetMeal = mealName)
-                else showLibraryPicker(targetMeal = mealName)
+                when (which) {
+                    0 -> showFoodDialog(addToDay = true, saveToLibrary = false, targetMeal = mealName)
+                    1 -> showLibraryPicker(targetMeal = mealName)
+                    2 -> showDishPicker(targetMeal = mealName)
+                }
             }
             .show()
     }
@@ -1105,7 +1192,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun showServingDialog(entry: FoodEntry, targetMeal: String = "") {
+    private fun showServingDialog(entry: FoodEntry, targetMeal: String = "", onResult: ((FoodEntry) -> Unit)? = null) {
         var isPortionMode = entry.portionGrams != null
         val fields = if (isPortionMode) {
             listOf(txt("Numero di porzioni", "Number of portions") to "1")
@@ -1169,15 +1256,21 @@ class MainActivity : Activity() {
                     quantity.roundToInt()
                 }
                 
-                addEntryToDay(entry.scaledForGrams(totalGrams.coerceAtLeast(1), "", targetMeal.ifBlank { entry.meal }))
-                showUndoSnackbar(txt("Aggiunto: ${entry.name}", "Added: ${entry.name}")) {
-                    if (entries.isNotEmpty()) {
-                        entries.removeAt(entries.lastIndex)
-                        saveEntriesForCurrentDay()
-                        render()
+                val scaled = entry.scaledForGrams(totalGrams.coerceAtLeast(1), "", targetMeal.ifBlank { entry.meal })
+                
+                if (onResult != null) {
+                    onResult(scaled)
+                } else {
+                    addEntryToDay(scaled)
+                    showUndoSnackbar(txt("Aggiunto: ${entry.name}", "Added: ${entry.name}")) {
+                        if (entries.isNotEmpty()) {
+                            entries.removeAt(entries.lastIndex)
+                            saveEntriesForCurrentDay()
+                            render()
+                        }
                     }
+                    render()
                 }
-                render()
             }
         )
     }
@@ -1274,7 +1367,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun showLibraryPicker(targetMeal: String = "") {
+    private fun showLibraryPicker(targetMeal: String = "", onSelected: ((FoodEntry) -> Unit)? = null) {
         if (foodLibrary.isEmpty()) {
             AlertDialog.Builder(this)
                 .setTitle(txt("Database vuoto", "Database empty"))
@@ -1340,7 +1433,13 @@ class MainActivity : Activity() {
                                     entry.baseProtein * factor, entry.baseCarbs * factor, entry.baseFat * factor))
 
                                 setOnClickListener {
-                                    showServingDialog(entry, targetMeal)
+                                    if (onSelected != null) {
+                                        onSelected(entry)
+                                        dialog.dismiss()
+                                    } else {
+                                        showServingDialog(entry, targetMeal)
+                                        dialog.dismiss()
+                                    }
                                 }
                             })
                         }
@@ -1689,6 +1788,7 @@ class MainActivity : Activity() {
         entryDates.clear()
         entryDates.addAll(prefs.getStringSet("entry_dates", emptySet()) ?: emptySet())
         loadFoodLibrary()
+        loadDishLibrary()
         loadBodyHistory()
 
         val today = currentDate.toString()
@@ -1756,6 +1856,262 @@ class MainActivity : Activity() {
         prefs.edit()
             .putString("food_library", JSONArray(foodLibrary.map { it.toJson() }).toString())
             .apply()
+    }
+
+    private fun loadDishLibrary() {
+        dishLibrary.clear()
+        val array = JSONArray(prefs.getString("dish_library", "[]") ?: "[]")
+        for (index in 0 until array.length()) {
+            dishLibrary.add(Dish.fromJson(array.getJSONObject(index)))
+        }
+    }
+
+    private fun saveDishLibrary() {
+        prefs.edit()
+            .putString("dish_library", JSONArray(dishLibrary.map { it.toJson() }).toString())
+            .apply()
+    }
+
+    private fun dishRow(dish: Dish): View {
+        var startX = 0f
+        var startY = 0f
+        var isSwiping = false
+        val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
+
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(10), 0, dp(10))
+            addView(rowTitle(dish.name))
+            
+            val entry = dish.toFoodEntry()
+            addView(macroSummaryText("${entry.grams}g | ${String.format("%.1f", entry.calories)} kcal", 
+                entry.protein, entry.carbs, entry.fat))
+            
+            setOnTouchListener { view, event ->
+                when (event.action) {
+                    MotionEvent.ACTION_DOWN -> {
+                        startX = event.rawX
+                        startY = event.rawY
+                        isSwiping = false
+                        false
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val dx = event.rawX - startX
+                        val dy = event.rawY - startY
+                        if (!isSwiping && abs(dx) > touchSlop && abs(dx) > abs(dy)) {
+                            isSwiping = true
+                            parent.requestDisallowInterceptTouchEvent(true)
+                        }
+                        
+                        if (isSwiping) {
+                            view.translationX = dx
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        if (isSwiping) {
+                            val dx = event.rawX - startX
+                            if (abs(dx) > dp(96)) {
+                                val item = dish
+                                dishLibrary.remove(dish)
+                                saveDishLibrary()
+                                
+                                view.post { 
+                                    render() 
+                                    showUndoSnackbar(txt("Piatto rimosso dal database", "Dish removed from database")) {
+                                        dishLibrary.add(item)
+                                        saveDishLibrary()
+                                        render()
+                                    }
+                                }
+                            } else {
+                                view.animate()
+                                    .translationX(0f)
+                                    .setDuration(200)
+                                    .start()
+                            }
+                            isSwiping = false
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    else -> false
+                }
+            }
+        }
+    }
+
+    private fun showDishDialog() {
+        val dialog = AlertDialog.Builder(this).create()
+        val currentIngredients = mutableListOf<FoodEntry>()
+        
+        fun createDishView(): View {
+            return LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setBackgroundColor(color(palette.background))
+                setPadding(dp(24), dp(24), dp(24), dp(24))
+                
+                addView(TextView(context).apply {
+                    text = txt("Nuovo Piatto", "New Dish")
+                    textSize = 22f
+                    setTextColor(color(palette.text))
+                    setTypeface(typeface, android.graphics.Typeface.BOLD)
+                    setPadding(0, 0, 0, dp(16))
+                })
+
+                val nameInput = EditText(context).apply {
+                    hint = txt("Nome piatto", "Dish name")
+                    setHintTextColor(if (palette.name == "Midnight" || palette.name == "Amber") Color.WHITE else Color.GRAY)
+                    setPadding(dp(12), dp(12), dp(12), dp(12))
+                    background = roundedBackground(palette.card, dp(12))
+                    setTextColor(color(palette.text))
+                    setSingleLine(true)
+                }
+                addView(nameInput)
+                addView(space(1, 16))
+
+                val scroll = ScrollView(context).apply { overScrollMode = View.OVER_SCROLL_NEVER }
+                val ingredientsList = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+                scroll.addView(ingredientsList)
+                addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+
+                val summaryText = TextView(context).apply {
+                    textSize = 14f
+                    setTextColor(color(palette.text))
+                    setPadding(0, dp(12), 0, dp(12))
+                }
+                addView(summaryText)
+
+                fun updateUI() {
+                    ingredientsList.removeAllViews()
+                    currentIngredients.forEachIndexed { index, ing ->
+                        ingredientsList.addView(LinearLayout(context).apply {
+                            orientation = LinearLayout.HORIZONTAL
+                            gravity = Gravity.CENTER_VERTICAL
+                            setPadding(0, dp(8), 0, dp(8))
+                            
+                            addView(TextView(context).apply {
+                                text = "${ing.name} (${ing.grams}g)"
+                                setTextColor(color(palette.text))
+                                textSize = 15f
+                            }, weightParams())
+                            
+                            addView(TextView(context).apply {
+                                text = " ✕ "
+                                setTextColor(Color.RED)
+                                setPadding(dp(12), dp(12), dp(12), dp(12))
+                                setOnClickListener {
+                                    currentIngredients.removeAt(index)
+                                    updateUI()
+                                }
+                            })
+                        })
+                    }
+                    
+                    val total = Dish("", currentIngredients).toFoodEntry()
+                    summaryText.text = txt(
+                        "Totale: ${total.calories.roundToInt()} kcal | P ${total.protein.roundToInt()}g C ${total.carbs.roundToInt()}g G ${total.fat.roundToInt()}g",
+                        "Total: ${total.calories.roundToInt()} kcal | P ${total.protein.roundToInt()}g C ${total.carbs.roundToInt()}g F ${total.fat.roundToInt()}g"
+                    )
+                }
+
+                addView(secondaryButton(txt("+ Aggiungi ingrediente", "+ Add ingredient")) {
+                    showLibraryPicker(onSelected = { entry ->
+                        showServingDialog(entry, onResult = { scaledEntry ->
+                            currentIngredients.add(scaledEntry)
+                            updateUI()
+                        })
+                    })
+                })
+
+                addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    setPadding(0, dp(20), 0, 0)
+                    addView(secondaryButton(txt("Annulla", "Cancel")) { dialog.dismiss() }, weightParams())
+                    addView(space(12, 1))
+                    addView(primaryButton(txt("Salva", "Save")) {
+                        val name = nameInput.text.toString()
+                        if (name.isNotBlank() && currentIngredients.isNotEmpty()) {
+                            dishLibrary.add(Dish(name, currentIngredients))
+                            saveDishLibrary()
+                            render()
+                            dialog.dismiss()
+                        }
+                    }, weightParams())
+                })
+                
+                updateUI()
+            }
+        }
+
+        dialog.setView(createDishView())
+        dialog.show()
+        dialog.window?.setBackgroundDrawable(roundedBackground(palette.background, dp(24)))
+    }
+
+    private fun showDishPicker(targetMeal: String) {
+        if (dishLibrary.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle(txt("Nessun piatto", "No dishes"))
+                .setMessage(txt("Crea prima un piatto nel tab Alimenti.", "Create a dish in the Foods tab first."))
+                .setPositiveButton("Ok", null)
+                .show()
+            return
+        }
+
+        val dialog = AlertDialog.Builder(this).create()
+        
+        fun createPickerView(): View {
+            return LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setBackgroundColor(color(palette.background))
+                setPadding(dp(24), dp(24), dp(24), dp(24))
+                
+                addView(TextView(context).apply {
+                    text = txt("Aggiungi piatto", "Add dish")
+                    textSize = 22f
+                    setTextColor(color(palette.text))
+                    setTypeface(typeface, android.graphics.Typeface.BOLD)
+                    setPadding(0, 0, 0, dp(16))
+                })
+
+                val scroll = ScrollView(context).apply { overScrollMode = View.OVER_SCROLL_NEVER }
+                val listContainer = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+                scroll.addView(listContainer)
+                addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+                
+                dishLibrary.sortedBy { it.name.lowercase() }.forEach { dish ->
+                    listContainer.addView(LinearLayout(context).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(0, dp(12), 0, dp(12))
+                        background = roundedBackground(palette.background, 0)
+                        addView(rowTitle(dish.name))
+                        val entry = dish.toFoodEntry()
+                        addView(macroSummaryText("${entry.grams}g | ${String.format("%.1f", entry.calories)} kcal", 
+                            entry.protein, entry.carbs, entry.fat))
+
+                        setOnClickListener {
+                            addEntryToDay(entry.scaledForGrams(entry.grams, "", targetMeal))
+                            dialog.dismiss()
+                            render()
+                        }
+                    })
+                }
+
+                addView(secondaryButton(txt("Chiudi", "Close")) { dialog.dismiss() }.apply {
+                    val params = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(46))
+                    params.setMargins(0, dp(16), 0, 0)
+                    layoutParams = params
+                })
+            }
+        }
+
+        dialog.setView(createPickerView())
+        dialog.show()
+        dialog.window?.setBackgroundDrawable(roundedBackground(palette.background, dp(24)))
     }
 
     private fun loadBodyHistory() {
