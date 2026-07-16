@@ -230,7 +230,9 @@ data class Dish(
         val totalProtein = ingredients.sumOf { it.protein }
         val totalCarbs = ingredients.sumOf { it.carbs }
         val totalFat = ingredients.sumOf { it.fat }
-        val totalGrams = ingredients.sumOf { it.grams }
+        val totalGrams = ingredients.sumOf { it.grams }.coerceAtLeast(1)
+
+        val factor = 100.0 / totalGrams
 
         return FoodEntry(
             name = name,
@@ -239,10 +241,10 @@ data class Dish(
             carbs = totalCarbs,
             fat = totalFat,
             grams = totalGrams,
-            baseCalories = totalKcal,
-            baseProtein = totalProtein,
-            baseCarbs = totalCarbs,
-            baseFat = totalFat,
+            baseCalories = totalKcal * factor,
+            baseProtein = totalProtein * factor,
+            baseCarbs = totalCarbs * factor,
+            baseFat = totalFat * factor,
             portionGrams = totalGrams
         )
     }
@@ -2094,9 +2096,8 @@ class MainActivity : Activity() {
                             entry.protein, entry.carbs, entry.fat))
 
                         setOnClickListener {
-                            addEntryToDay(entry.scaledForGrams(entry.grams, "", targetMeal))
+                            showServingDialog(entry, targetMeal)
                             dialog.dismiss()
-                            render()
                         }
                     })
                 }
