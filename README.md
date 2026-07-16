@@ -13,6 +13,7 @@ MacroTracker è un'applicazione Android progettata per monitorare l'apporto nutr
 - **Inserimento Intelligente**: Aggiungi nuovi alimenti specificando i macro per **100g** o per **porzione singola**.
 - **Logging Rapido**: Quando aggiungi un alimento salvato come "porzione", l'app ti permette di loggarlo semplicemente inserendo il numero di porzioni (es. 1, 0.5, 2), automatizzando il calcolo dei grammi.
 - **Ricerca Rapida**: Filtra istantaneamente il tuo database personale per trovare ciò che ti serve.
+- **Piatti composti**: Crea dei piatti composti con gli alimenti del database, rendendo più facile e veloce l'inserimento di piatti che si mangiano spesso.
 
 ### Progressi e Body Tracking
 - **Misurazioni Corporee**: Registra peso e oltre 15 diverse misure (collo, spalle, torace, vita, fianchi, bicipiti, ecc.).
